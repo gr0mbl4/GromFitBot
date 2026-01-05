@@ -1,169 +1,285 @@
 """
-Главный класс бота GromFit с кнопками под чатом
+Главный класс бота GromFit
+Исправленная версия с правильной настройкой клавиатур
 """
 
 import asyncio
 import logging
+import sys
 import os
-from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher
+from typing import Optional
+
+from aiogram import Bot, Dispatcher, Router
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.client.default import DefaultBotProperties
+from aiogram.types import BotCommand, Message
+from aiogram.filters import Command
+from aiogram import F
 
-# Импортируем модули
+from src.core.config import Config
+from src.core.database import Database
 from src.modules.auth.registration import router as auth_router
 from src.modules.profile.handlers import router as profile_router
-from src.modules.referrals.handlers import router as referral_router
-from src.modules.finance.handlers import router as finance_router
+from src.modules.referrals.handlers import router as referrals_router
+from src.modules.bonus.handlers import router as bonus_router
+from src.modules.shop.handlers import router as shop_router
+from src.modules.keyboards.main_keyboards import MainKeyboards
 
-# Импортируем новые модули
-try:
-    from src.modules.bonus.handlers import router as bonus_router
-    HAS_BONUS_MODULE = True
-except ImportError:
-    HAS_BONUS_MODULE = False
-    print("⚠️ Модуль бонусов не найден, пропускаем...")
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/bot.log'),
+        logging.StreamHandler()
+    ]
+)
 
-try:
-    from src.modules.shop.handlers import router as shop_router
-    HAS_SHOP_MODULE = True
-except ImportError:
-    HAS_SHOP_MODULE = False
-    print("⚠️ Модуль магазина не найден, пропускаем...")
-
-# Импортируем системы
-from src.modules.referrals.system import referral_system
-from src.modules.finance.token_system import token_system
-
-# Загружаем переменные окружения
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 class GromFitBot:
-    """Главный класс бота GromFit"""
+    """Основной класс бота GromFit"""
     
     def __init__(self):
-        # Настройка логирования
-        self.logger = logging.getLogger(__name__)
+        """Инициализация бота"""
+        self.config = Config()
+        self.bot = None
+        self.dp = None
+        self.db = Database()
         
-        # Получаем токен из .env
-        self.TOKEN = os.getenv("BOT_TOKEN", "")
+        # Валидируем конфигурацию
+        self._validate_config()
         
-        if not self.TOKEN:
-            self.logger.error("[ERROR] Токен бота не найден! Укажите BOT_TOKEN в .env файле")
-            exit(1)
-        
-        # Инициализация бота с увеличенными таймаутами
+        # Инициализация асинхронных объектов
+        self._init_async_objects()
+    
+    def _validate_config(self):
+        """Валидация конфигурации"""
+        try:
+            Config.validate()
+            logger.info("✅ Конфигурация проверена")
+        except ValueError as e:
+            logger.error(f"❌ Ошибка конфигурации: {e}")
+            raise
+    
+    def _init_async_objects(self):
+        """Инициализация асинхронных объектов"""
         self.bot = Bot(
-            token=self.TOKEN,
-            default=DefaultBotProperties(
-                parse_mode=ParseMode.HTML,
-                link_preview_is_disabled=True  # Отключаем предпросмотр ссылок для уменьшения нагрузки
-            )
+            token=Config.BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
-        self.storage = MemoryStorage()
-        self.dp = Dispatcher(storage=self.storage)
         
-        # Настройка систем
-        self._setup_systems()
-        
-        # Регистрация модулей
-        self._register_modules()
-        
-        # Установка команд бота
-        self._set_commands()
-        
-        self.logger.info("[OK] Бот GromFit инициализирован")
+        # Используем MemoryStorage для состояний
+        storage = MemoryStorage()
+        self.dp = Dispatcher(storage=storage)
     
-    def _setup_systems(self):
-        """Настройка взаимодействия систем"""
-        # Передаем систему токенов в реферальную систему
-        referral_system.set_token_system(token_system)
+    def _setup_routers(self):
+        """Настройка роутеров"""
+        # Создаем общий роутер для обработки кнопки "Главное меню"
+        common_router = Router()
         
-        # Бонусы уже установлены в token_system (25 токенов пригласившему, 50 приглашенному)
-        self.logger.info("[OK] Системы настроены")
-    
-    def _register_modules(self):
-        """Регистрация всех модулей бота"""
+        @common_router.message(F.text == "🏠 Главное меню")
+        async def handle_main_menu_button(message: Message):
+            """Обработчик кнопки 'Главное меню'"""
+            telegram_id = message.from_user.id
+            
+            user = self.db.get_user(telegram_id)
+            if not user:
+                await message.answer("❌ Сначала зарегистрируйтесь с помощью /start")
+                return
+            
+            text = (
+                "🏠 <b>ГЛАВНОЕ МЕНЮ GROMFIT</b>\n\n"
+                "Выберите раздел для навигации:\n\n"
+                "• 🏋️‍♂️ <b>ПРОФИЛЬ</b> - ваши данные и статистика\n"
+                "• ⚔️ <b>ДУЭЛИ</b> - спортивные соревнования (скоро)\n"
+                "• 📊 <b>ТРЕНИРОВКИ</b> - запись тренировок (скоро)\n"
+                "• 🎯 <b>ДОСТИЖЕНИЯ</b> - ваши награды и ачивки (скоро)\n"
+                "• 💰 <b>МАГАЗИН</b> - покупка товаров за токены\n"
+                "• 👥 <b>РЕФЕРАЛЫ</b> - приглашение друзей и бонусы\n"
+                "• 🎁 <b>ЕЖЕДНЕВНЫЙ БОНУС</b> - ежедневная награда\n\n"
+                "<i>Основные кнопки всегда доступны ниже ↓</i>"
+            )
+            
+            await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
         
-        # Модуль авторизации и регистрации
+        @common_router.message(Command("menu"))
+        async def handle_menu_command(message: Message):
+            """Обработчик команды /menu"""
+            telegram_id = message.from_user.id
+            
+            user = self.db.get_user(telegram_id)
+            if not user:
+                await message.answer("❌ Сначала зарегистрируйтесь с помощью /start")
+                return
+            
+            text = (
+                "🏠 <b>ГЛАВНОЕ МЕНЮ GROMFIT</b>\n\n"
+                "Выберите раздел для навигации:\n\n"
+                "• 🏋️‍♂️ <b>ПРОФИЛЬ</b> - ваши данные и статистика\n"
+                "• ⚔️ <b>ДУЭЛИ</b> - спортивные соревнования (скоро)\n"
+                "• 📊 <b>ТРЕНИРОВКИ</b> - запись тренировок (скоро)\n"
+                "• 🎯 <b>ДОСТИЖЕНИЯ</b> - ваши награды и ачивки (скоро)\n"
+                "• 💰 <b>МАГАЗИН</b> - покупка товаров за токены\n"
+                "• 👥 <b>РЕФЕРАЛЫ</b> - приглашение друзей и бонусы\n"
+                "• 🎁 <b>ЕЖЕДНЕВНЫЙ БОНУС</b> - ежедневная награда\n\n"
+                "<i>Основные кнопки всегда доступны ниже ↓</i>"
+            )
+            
+            await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
+        
+        @common_router.message(F.text == "⬅️ Назад")
+        async def handle_back_button(message: Message):
+            """Обработчик кнопки 'Назад'"""
+            await handle_main_menu_button(message)
+        
+        @common_router.message(F.text == "📝 Записать результат")
+        async def handle_record_result(message: Message):
+            """Обработчик кнопки 'Записать результат'"""
+            text = (
+                "📝 <b>ЗАПИСЬ РЕЗУЛЬТАТА</b>\n\n"
+                "Функция записи результатов тренировок будет доступна в ближайшем обновлении!\n\n"
+                "А пока вы можете:\n"
+                "• Посмотреть свой профиль\n"
+                "• Пригласить друзей\n"
+                "• Получить ежедневный бонус\n"
+                "• Посетить магазин\n\n"
+                "<i>Следите за обновлениями!</i>"
+            )
+            
+            await message.answer(text, reply_markup=MainKeyboards.get_bottom_keyboard())
+        
+        @common_router.message(F.text == "⚔️ ДУЭЛИ")
+        async def handle_duels(message: Message):
+            """Обработчик кнопки 'ДУЭЛИ'"""
+            text = (
+                "⚔️ <b>СИСТЕМА ДУЭЛЕЙ</b>\n\n"
+                "Система спортивных дуэлей находится в разработке!\n\n"
+                "<b>Скоро вы сможете:</b>\n"
+                "• Бросать вызовы друзьям\n"
+                "• Участвовать в соревнованиях\n"
+                "• Делать ставки токенами\n"
+                "• Зарабатывать награды\n\n"
+                "<i>Оставайтесь на связи!</i>"
+            )
+            
+            await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
+        
+        @common_router.message(F.text == "📊 ТРЕНИРОВКИ")
+        async def handle_trainings(message: Message):
+            """Обработчик кнопки 'ТРЕНИРОВКИ'"""
+            text = (
+                "📊 <b>СИСТЕМА ТРЕНИРОВОК</b>\n\n"
+                "Система учета тренировок находится в разработке!\n\n"
+                "<b>Скоро вы сможете:</b>\n"
+                "• Записывать свои тренировки\n"
+                "• Следить за прогрессом\n"
+                "• Получать достижения\n"
+                "• Сравнивать результаты\n\n"
+                "<i>Оставайтесь на связи!</i>"
+            )
+            
+            await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
+        
+        @common_router.message(F.text == "🎯 ДОСТИЖЕНИЯ")
+        async def handle_achievements(message: Message):
+            """Обработчик кнопки 'ДОСТИЖЕНИЯ'"""
+            text = (
+                "🎯 <b>СИСТЕМА ДОСТИЖЕНИЙ</b>\n\n"
+                "Система достижений находится в разработке!\n\n"
+                "<b>Скоро вы сможете:</b>\n"
+                "• Получать награды за активность\n"
+                "• Собирать коллекцию достижений\n"
+                "• Показывать свои успехи\n"
+                "• Соревноваться с друзьями\n\n"
+                "<i>Оставайтесь на связи!</i>"
+            )
+            
+            await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
+        
+        # Регистрация всех роутеров в правильном порядке
         self.dp.include_router(auth_router)
-        
-        # Модуль профиля
         self.dp.include_router(profile_router)
-        
-        # Модуль реферальной системы
-        self.dp.include_router(referral_router)
-        
-        # Модуль финансовой системы
-        self.dp.include_router(finance_router)
-        
-        # Модуль ежедневных бонусов (если существует)
-        if HAS_BONUS_MODULE:
-            self.dp.include_router(bonus_router)
-            self.logger.info("[OK] Модуль бонусов зарегистрирован")
-        else:
-            self.logger.info("[INFO] Модуль бонусов не найден, пропускаем")
-        
-        # Модуль магазина (если существует)
-        if HAS_SHOP_MODULE:
-            self.dp.include_router(shop_router)
-            self.logger.info("[OK] Модуль магазина зарегистрирован")
-        else:
-            self.logger.info("[INFO] Модуль магазина не найден, пропускаем")
-        
-        self.logger.info("[OK] Модули зарегистрированы")
+        self.dp.include_router(referrals_router)
+        self.dp.include_router(bonus_router)
+        self.dp.include_router(shop_router)
+        self.dp.include_router(common_router)  # Общие обработчики должны быть последними
     
-    def _set_commands(self):
-        """Установка команд бота"""
-        from aiogram.types import BotCommand, BotCommandScopeDefault
-        
+    async def setup_bot_commands(self):
+        """Настройка команд бота"""
         commands = [
-            BotCommand(command="/start", description="Запустить бота"),
-            BotCommand(command="/profile", description="Мой профиль"),
-            BotCommand(command="/menu", description="Главное меню"),
-            BotCommand(command="/referrals", description="Реферальная система"),
+            BotCommand(command="start", description="🚀 Запустить бота"),
+            BotCommand(command="profile", description="👤 Профиль пользователя"),
+            BotCommand(command="referrals", description="👥 Реферальная система"),
+            BotCommand(command="shop", description="🛒 Магазин"),
+            BotCommand(command="bonus", description="🎁 Ежедневный бонус"),
+            BotCommand(command="menu", description="🏠 Главное меню"),
+            BotCommand(command="help", description="❓ Помощь"),
         ]
         
-        # Добавляем команду /bonus только если модуль существует
-        if HAS_BONUS_MODULE:
-            commands.append(BotCommand(command="/bonus", description="Ежедневный бонус"))
+        try:
+            await self.bot.set_my_commands(commands)
+            logger.info("✅ Команды бота настроены")
+        except Exception as e:
+            logger.error(f"❌ Ошибка настройки команд бота: {e}")
+    
+    async def setup_middlewares(self):
+        """Настройка middleware"""
+        # Здесь можно добавить middleware при необходимости
+        pass
+    
+    async def on_startup(self):
+        """Действия при запуске бота"""
+        logger.info("🚀 Запуск GromFit Bot...")
         
-        # Добавляем команду /shop только если модуль существует
-        if HAS_SHOP_MODULE:
-            commands.append(BotCommand(command="/shop", description="Магазин"))
+        try:
+            # Инициализация базы данных
+            self.db.initialize()
+            logger.info("✅ База данных инициализирована")
+            
+            # Настройка команд
+            await self.setup_bot_commands()
+            
+            # Настройка middleware
+            await self.setup_middlewares()
+            
+            # Настройка роутеров
+            self._setup_routers()
+            
+            logger.info("✅ Бот успешно запущен и готов к работе")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при запуске бота: {e}")
+            raise
+    
+    async def on_shutdown(self):
+        """Действия при остановке бота"""
+        logger.info("🛑 Остановка GromFit Bot...")
         
-        async def set_bot_commands():
-            try:
-                await self.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-                self.logger.info("[OK] Команды бота установлены")
-            except Exception as e:
-                self.logger.error(f"Ошибка установки команд: {e}")
-        
-        # Запускаем установку команд
-        asyncio.create_task(set_bot_commands())
+        try:
+            # Закрываем соединения
+            await self.bot.session.close()
+            logger.info("✅ Сессия бота закрыта")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при остановке бота: {e}")
     
     async def start(self):
         """Запуск бота"""
-        self.logger.info("[START] Запуск бота GromFit...")
-        
         try:
-            # Удаляем вебхук (если был)
-            await self.bot.delete_webhook(drop_pending_updates=True)
+            # Действия при запуске
+            await self.on_startup()
             
-            # Запускаем polling с настройкой обработки обновлений
-            await self.dp.start_polling(
-                self.bot,
-                allowed_updates=self.dp.resolve_used_update_types(),
-                skip_updates=True,
-                handle_signals=True
-            )
+            # Запуск поллинга
+            logger.info("📡 Ожидание сообщений...")
+            await self.dp.start_polling(self.bot)
             
         except Exception as e:
-            self.logger.error(f"Ошибка запуска бота: {e}")
+            logger.error(f"❌ Критическая ошибка при запуске бота: {e}")
             raise
+        finally:
+            await self.on_shutdown()
     
     async def stop(self):
         """Остановка бота"""
-        self.logger.info("[STOP] Остановка бота GromFit...")
-        await self.bot.session.close()
+        await self.on_shutdown()

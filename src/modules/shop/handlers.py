@@ -1,15 +1,18 @@
 """
-Базовый модуль магазина
+Обработчики магазина
 """
 
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message
 from aiogram.filters import Command
-from src.core.database import db
+
+from src.core.database import Database
 from src.modules.keyboards.main_keyboards import MainKeyboards
 
 router = Router()
+db = Database()
 
+@router.message(F.text == "💰 МАГАЗИН")
 @router.message(Command("shop"))
 async def cmd_shop(message: Message):
     """Обработчик команды /shop"""
@@ -20,38 +23,73 @@ async def cmd_shop(message: Message):
         await message.answer("❌ Сначала зарегистрируйтесь с помощью /start")
         return
     
-    tokens = float(user['balance_tokens']) if user['balance_tokens'] is not None else 0
+    # Получаем балансы
+    balances = db.get_user_balance(telegram_id)
+    tokens = balances.get('tokens', 0.0)
+    diamonds = balances.get('diamonds', 0.0)
     
-    text = (
-        "🛒 <b>МАГАЗИН GROMFIT</b>\n\n"
-        "🏆 <b>ТОВАРЫ И УСЛУГИ:</b>\n\n"
-        "1. <b>НОВИЧКАМ</b>\n"
-        "   • 3 дня безлимитных голосовых + 1 анализ\n"
-        "   • Цена: <b>50 токенов</b> (специальное предложение!)\n\n"
-        "2. <b>ПРЕМИУМ СТАТУС</b>\n"
-        "   • Доступ на 1 месяц\n"
-        "   • Эксклюзивные возможности\n"
-        "   • Цена: 100 токенов\n\n"
-        "3. <b>ДОПОЛНИТЕЛЬНЫЕ ГОЛОСА</b>\n"
-        "   • Пакет из 5 голосов для дуэлей\n"
-        "   • Цена: 10 токенов\n\n"
-        "4. <b>ЭКСКЛЮЗИВНЫЕ ДОСТИЖЕНИЯ</b>\n"
-        "   • Уникальные ачивки для профиля\n"
-        "   • Цена: 50 токенов\n\n"
-        "5. <b>УСКОРЕНИЕ ВОССТАНОВЛЕНИЯ</b>\n"
-        "   • Быстрое восстановление после тренировок\n"
-        "   • Цена: 25 токенов\n\n"
-        f"💳 <b>ВАШ БАЛАНС:</b> {tokens:.0f} токенов\n\n"
-        "<i>Функционал магазина будет доступен в ближайшем обновлении!\n"
-        "Следите за анонсами в боте.</i>"
-    )
+    # Получаем товары
+    shop_items = db.get_shop_items()
     
-    await message.answer(
-        text,
-        reply_markup=MainKeyboards.get_bottom_keyboard()
-    )
-
-@router.message(F.text == "🛒 Магазин")
-async def handle_shop_button(message: Message):
-    """Обработчик кнопки магазина под чатом"""
-    await cmd_shop(message)
+    if not shop_items:
+        text = (
+            f"🛒 <b>МАГАЗИН GROMFIT</b>\n\n"
+            f"💰 <b>Ваш баланс:</b>\n"
+            f"• Токены: {tokens:.2f} GFT\n"
+            f"• Алмазы: {diamonds:.2f} 💎\n\n"
+            f"❌ <b>Товары временно отсутствуют</b>\n\n"
+            f"<i>Загляните позже!</i>"
+        )
+    else:
+        text = (
+            f"🛒 <b>МАГАЗИН GROMFIT</b>\n\n"
+            f"💰 <b>Ваш баланс:</b>\n"
+            f"• Токены: {tokens:.2f} GFT\n"
+            f"• Алмазы: {diamonds:.2f} 💎\n\n"
+            f"📦 <b>Доступные товары:</b>\n\n"
+        )
+        
+        # Группируем товары по категориям
+        categories = {}
+        for item in shop_items[:10]:  # Ограничиваем 10 товарами
+            item_type = item.get('item_type', 'other')
+            if item_type not in categories:
+                categories[item_type] = []
+            categories[item_type].append(item)
+        
+        # Выводим товары по категориям
+        for category, items in categories.items():
+            category_name = {
+                'tokens_pack': '💰 Пакеты токенов',
+                'premium': '👑 Премиум статус',
+                'boost': '⚡ Бусты',
+                'cosmetic': '🎨 Косметика',
+                'other': '🎁 Разное'
+            }.get(category, '🎁 Товары')
+            
+            text += f"<b>{category_name}:</b>\n"
+            
+            for item in items:
+                name = item.get('name', 'Без названия')
+                description = item.get('description', '')
+                price_tokens = float(item.get('price_tokens', 0))
+                price_diamonds = float(item.get('price_diamonds', 0))
+                icon = item.get('icon', '🛍️')
+                
+                price_text = ""
+                if price_tokens > 0:
+                    price_text += f"{price_tokens:.0f} GFT"
+                if price_diamonds > 0:
+                    if price_text:
+                        price_text += " + "
+                    price_text += f"{price_diamonds:.0f} 💎"
+                
+                text += f"{icon} <b>{name}</b> - {price_text}\n"
+                if description:
+                    text += f"   <i>{description[:50]}...</i>\n"
+            
+            text += "\n"
+        
+        text += "<i>Для покупки товара напишите его название</i>"
+    
+    await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
