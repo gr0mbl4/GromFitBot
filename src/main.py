@@ -1,144 +1,127 @@
 """
-Точка входа в приложение GromFit Bot
-Исправленная версия с правильной инициализацией
+Главный файл бота GromFit
+Точка входа в приложение
 """
 
 import asyncio
-import sys
-import os
 import logging
+import logging.config
+import os
+import sys
 
-# Добавляем корневую директорию в путь Python
+# Добавляем путь к родительской директории для импорта src
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
 
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
-# Настройка логирования ДО импорта модулей
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/bot.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+from src.core.config import BOT_TOKEN, LOGGING_CONFIG
 
+# Настройка логирования
+logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
 async def main():
-    """Основная функция запуска"""
+    """Основная функция запуска бота"""
     
-    logger.info("=" * 50)
-    logger.info("🚀 ЗАПУСК GROMFIT BOT")
-    logger.info("=" * 50)
+    logger.info("🚀 Запуск GromFitBot...")
     
     try:
-        # Импортируем здесь, чтобы логирование уже было настроено
+        # Проверяем токен бота (смягченная проверка для тестирования)
+        if not BOT_TOKEN:
+            logger.error("❌ Токен бота не установлен.")
+            print("❌ ОШИБКА: Токен бота не установлен!")
+            print("Проверьте файл .env и убедитесь, что BOT_TOKEN установлен.")
+            return
+        
+        logger.info(f"🤖 Бот инициализирован с токеном: {BOT_TOKEN[:10]}...")
+        
+        # Создаем экземпляр бота
+        bot = Bot(
+            token=BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
+        
+        # Создаем диспетчер
+        dp = Dispatcher()
+        
+        # Импортируем и инициализируем бота
         from src.core.bot import GromFitBot
+        gromfit_bot = GromFitBot(bot, dp)
         
-        # Создаем и запускаем бота
-        bot = GromFitBot()
+        # Настраиваем роутеры
+        gromfit_bot.setup()
         
-        logger.info("✅ Бот инициализирован")
-        logger.info("🔄 Запуск основного цикла...")
+        logger.info("✅ Бот инициализирован. Начинаем polling...")
+        print("=" * 50)
+        print("🤖 GROMFIT BOT ЗАПУЩЕН!")
+        print("=" * 50)
+        print("Статус: 🟢 АКТИВЕН")
+        print(f"Токен: {BOT_TOKEN[:10]}...")
+        print("Ожидание сообщений...")
+        print("=" * 50)
         
-        await bot.start()
+        # Запускаем бота
+        await dp.start_polling(bot)
         
-    except KeyboardInterrupt:
-        logger.info("\n🛑 Бот остановлен пользователем (Ctrl+C)")
     except Exception as e:
-        logger.error(f"\n❌ Критическая ошибка: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        
-        # Ждем перед выходом, чтобы лог успел записаться
-        await asyncio.sleep(1)
-        
-        # Перезапуск через 5 секунд при критической ошибке
-        logger.info("♻️ Перезапуск бота через 5 секунд...")
-        await asyncio.sleep(5)
-        
-        # Рекурсивный перезапуск
-        await main()
+        logger.error(f"❌ Критическая ошибка при запуске бота: {e}", exc_info=True)
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        print("Проверьте логи в папке logs/")
+        raise
     finally:
-        logger.info("=" * 50)
-        logger.info("📴 БОТ ОСТАНОВЛЕН")
-        logger.info("=" * 50)
-
-def create_required_dirs():
-    """Создание необходимых директорий"""
-    required_dirs = [
-        'logs',
-        'data',
-        'users_data',
-        'media/photos',
-        'media/videos',
-        'media/thumbnails',
-        'media/documents',
-        'backups/daily',
-        'backups/weekly',
-        'backups/manual'
-    ]
-    
-    for dir_path in required_dirs:
-        os.makedirs(dir_path, exist_ok=True)
-        logger.debug(f"Директория создана/проверена: {dir_path}")
+        logger.info("🛑 Бот остановлен")
+        print("\n🛑 Бот остановлен")
 
 def check_environment():
-    """Проверка окружения"""
-    logger.info("🔍 Проверка окружения...")
+    """Проверка окружения перед запуском"""
+    print("🔍 Проверка окружения...")
     
     # Проверяем наличие .env файла
-    if not os.path.exists('.env'):
-        logger.warning("⚠️ Файл .env не найден! Создайте его из .env.example")
-        
-        if os.path.exists('.env.example'):
-            import shutil
-            shutil.copy('.env.example', '.env')
-            logger.info("✅ Файл .env создан из .env.example")
-        else:
-            logger.error("❌ Файл .env.example также не найден!")
-            return False
-    
-    # Читаем токен из .env
-    try:
-        with open('.env', 'r', encoding='utf-8') as f:
-            content = f.read()
-            if 'BOT_TOKEN' not in content:
-                logger.error("❌ BOT_TOKEN не найден в .env файле!")
-                logger.info("📋 Добавьте строку: BOT_TOKEN=ваш_токен_бота")
-                return False
-    except Exception as e:
-        logger.error(f"❌ Ошибка чтения .env файла: {e}")
-        return False
+    env_file = os.path.join(parent_dir, '.env')
+    if not os.path.exists(env_file):
+        print("⚠️ Файл .env не найден. Используются значения по умолчанию.")
+        # Создаем .env файл с тестовым токеном
+        try:
+            with open(env_file, 'w', encoding='utf-8') as f:
+                f.write("BOT_TOKEN=8170901723:AAFCJDYlQqvcKxiNVvQrM3n1R9snzWljeC8\n")
+                f.write("REDIS_HOST=localhost\n")
+                f.write("REDIS_PORT=6379\n")
+                f.write("WEB_HOST=0.0.0.0\n")
+                f.write("WEB_PORT=8080\n")
+            print("✅ Создан файл .env с тестовым токеном")
+        except Exception as e:
+            print(f"⚠️ Не удалось создать .env файл: {e}")
     
     # Проверяем наличие базы данных
-    if not os.path.exists('data/users.db'):
-        logger.warning("⚠️ База данных не найдена!")
-        logger.info("   Запустите: python create_database.py")
-        return False
+    db_dir = os.path.join(parent_dir, 'data')
+    if not os.path.exists(db_dir):
+        print("📁 Создаю директорию data...")
+        os.makedirs(db_dir, exist_ok=True)
     
-    logger.info("✅ Окружение проверено")
+    # Проверяем наличие логов
+    logs_dir = os.path.join(parent_dir, 'logs')
+    if not os.path.exists(logs_dir):
+        print("📁 Создаю директорию logs...")
+        os.makedirs(logs_dir, exist_ok=True)
+    
+    print("✅ Окружение проверено")
     return True
 
 if __name__ == "__main__":
-    # Создаем необходимые директории
-    create_required_dirs()
-    
-    # Проверяем окружение
+    # Проверяем окружение перед запуском
     if not check_environment():
-        logger.error("❌ Ошибка проверки окружения. Проверьте наличие всех файлов.")
+        print("❌ Запуск отменен из-за проблем с окружением")
         sys.exit(1)
     
-    # Запускаем асинхронную main функцию
+    # Запускаем бота
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("\n👋 До свидания!")
+        print("\n\n⚠️ Бот остановлен пользователем (Ctrl+C)")
     except Exception as e:
-        logger.error(f"❌ Фатальная ошибка: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        print(f"\n\n❌ Непредвиденная ошибка: {e}")
         sys.exit(1)

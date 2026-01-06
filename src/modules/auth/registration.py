@@ -1,255 +1,260 @@
 """
-Модуль регистрации и авторизации пользователей
-Исправленная версия без ошибок .get()
+Модуль регистрации пользователей
 """
 
 from aiogram import Router, F
-from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-import random
-import string
-import logging
+from aiogram.types import Message, ReplyKeyboardRemove, KeyboardButton
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from datetime import datetime
 
 from src.core.database import Database
 from src.core.config import REGIONS
 from src.modules.keyboards.main_keyboards import MainKeyboards
-from src.modules.keyboards.auth_keyboards import AuthKeyboards  # Исправленный импорт
-
-# Настройка логирования
-logger = logging.getLogger(__name__)
 
 router = Router()
 db = Database()
 
+# Состояния регистрации
 class RegistrationStates(StatesGroup):
-    """Состояния процесса регистрации"""
     waiting_for_nickname = State()
     waiting_for_region = State()
 
-def validate_nickname(nickname: str) -> tuple[bool, str]:
-    """Валидация никнейма"""
-    # Проверка длины
-    if len(nickname) < 3 or len(nickname) > 20:
-        return False, "❌ Никнейм должен быть от 3 до 20 символов"
+# Нормализация названия города
+def normalize_city_name(city: str) -> str:
+    """Нормализация названия города для сравнения"""
+    city = city.strip().lower()
     
-    # Проверка на запрещенные символы
-    forbidden_chars = ['<', '>', '&', '"', "'", '`', '\\', '/', '|', '{', '}', '[', ']']
-    for char in forbidden_chars:
-        if char in nickname:
-            return False, f"❌ Никнейм содержит запрещенный символ: {char}"
+    # Заменяем ё на е
+    city = city.replace('ё', 'е')
     
-    # Проверка на запрещенные слова
-    forbidden_words = ['admin', 'root', 'moderator', 'administrator', 'support', 'help']
-    for word in forbidden_words:
-        if word in nickname.lower():
-            return False, "❌ Никнейм содержит запрещенное слово"
+    # Удаляем лишние пробелы
+    city = ' '.join(city.split())
     
-    return True, "✅ Никнейм принят"
+    return city
 
-def generate_registration_number() -> str:
-    """Генерация уникального номера регистрации GFXXXXXXXXXXYYY"""
-    # 10 случайных цифр
-    digits = ''.join(random.choices(string.digits, k=10))
-    # 3 случайные буквы
-    letters = ''.join(random.choices(string.ascii_uppercase, k=3))
+# Поиск города в базе
+def find_city_in_regions(city_input: str) -> str:
+    """Поиск города в базе регионов"""
+    normalized_input = normalize_city_name(city_input)
     
-    return f"GF{digits}{letters}"
+    for city in REGIONS:
+        normalized_city = normalize_city_name(city)
+        if normalized_input == normalized_city:
+            return city
+    
+    # Если не нашли точное совпадение, ищем частичное
+    for city in REGIONS:
+        normalized_city = normalize_city_name(city)
+        if normalized_input in normalized_city or normalized_city in normalized_input:
+            return city
+    
+    return None
 
-@router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+# Обработчик команды /start
+@router.message(Command("start"))
+async def command_start(message: Message, state: FSMContext):
     """Обработчик команды /start"""
-    telegram_id = message.from_user.id
-    username = message.from_user.username or ""
-    first_name = message.from_user.first_name or ""
     
-    # Проверяем реферальную ссылку
-    args = message.text.split()
-    referrer_id = None
+    user_id = message.from_user.id
     
-    if len(args) > 1 and args[1].startswith('ref'):
-        try:
-            referrer_id = int(args[1][3:])
-        except:
-            pass
-    
-    # Проверяем наличие пользователя в базе
-    user = db.get_user(telegram_id)
+    # Проверяем, зарегистрирован ли пользователь
+    user = db.get_user_by_telegram_id(user_id)
     
     if user:
         # Пользователь уже зарегистрирован
-        # БЕЗОПАСНОЕ ОБРАЩЕНИЕ К sqlite3.Row
-        user_dict = dict(user) if user else {}
-        
-        nickname = user_dict.get('nickname', 'Без имени')
-        registration_number = user_dict.get('registration_number', 'Неизвестно')
-        
-        text = (
-            f"👋 С возвращением, <b>{nickname}</b>!\n\n"
-            f"🏷️ Ваш ID: <code>{registration_number}</code>\n\n"
-            f"<i>Используйте меню для навигации</i>"
+        await message.answer(
+            f"👋 С возвращением, {user['nickname']}!\n"
+            f"Ваш баланс: {user['balance_tokens']} токенов\n\n"
+            f"Что хотите сделать?",
+            reply_markup=MainKeyboards.get_main_menu()
         )
         
-        # Показываем главное меню под сообщением
-        await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
-        
-        # И ОТДЕЛЬНО показываем кнопки под чатом (всегда видимые)
+        # Показываем нижнее меню
         await message.answer(
-            "⬇️ <b>Основные кнопки всегда доступны ниже:</b>",
+            "📱 Доступные действия:",
             reply_markup=MainKeyboards.get_bottom_keyboard()
         )
         
-        await state.clear()
+        # Обновляем last_active
+        db.update_user_last_active(user_id)
+        
         return
     
     # Новый пользователь - начинаем регистрацию
-    if referrer_id:
-        await state.update_data(referrer_id=referrer_id)
+    referrer_id = None
+    
+    # Проверяем реферальную ссылку
+    if len(message.text.split()) > 1:
+        try:
+            referrer_id = int(message.text.split()[1])
+            # Проверяем существование реферера
+            referrer = db.get_user_by_telegram_id(referrer_id)
+            if not referrer:
+                referrer_id = None
+        except:
+            referrer_id = None
+    
+    # Сохраняем referrer_id в состоянии
+    await state.update_data(referrer_id=referrer_id)
+    
+    # Получаем имя из Telegram
+    first_name = message.from_user.first_name or ""
+    username = message.from_user.username or ""
+    
+    # Определяем предложенное имя
+    suggested_name = ""
+    if first_name:
+        suggested_name = first_name
+    elif username:
+        suggested_name = username
+    
+    if suggested_name:
+        # Создаем клавиатуру с именем из Telegram
+        builder = ReplyKeyboardBuilder()
+        builder.row(KeyboardButton(text=suggested_name))
+        keyboard = builder.as_markup(resize_keyboard=True, persistent=True)
+        
+        await message.answer(
+            f"👋 Добро пожаловать в GromFit!\n\n"
+            f"Как к вам обращаться?\n"
+            f"Можно использовать имя из Telegram:\n\n"
+            f"<b>{suggested_name}</b>\n\n"
+            f"Если хотите использовать это имя - нажмите кнопку ниже\n"
+            f"Если хотите другой ник - просто введите его вручную",
+            reply_markup=keyboard
+        )
+    else:
+        await message.answer(
+            f"👋 Добро пожаловать в GromFit!\n\n"
+            f"Как к вам обращаться?\n"
+            f"Введите ваш никнейм (3-20 символов):",
+            reply_markup=ReplyKeyboardRemove()
+        )
     
     await state.set_state(RegistrationStates.waiting_for_nickname)
-    
-    text = (
-        f"👋 Привет, <b>{first_name}</b>!\n\n"
-        f"Добро пожаловать в <b>GromFit Bot</b> — лучшего помощника для спортивных дуэлей!\n\n"
-        f"🎯 <b>Что умеет бот:</b>\n"
-        f"• ⚔️ Система спортивных дуэлей\n"
-        f"• 📊 Трекинг тренировок\n"
-        f"• 🏆 Достижения и награды\n"
-        f"• 👥 Реферальная система\n"
-        f"• 🛒 Магазин с токенами\n\n"
-        f"📝 Для начала <b>придумайте себе никнейм</b> (3-20 символов):"
-    )
-    
-    await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
+# Обработка ввода никнейма
 @router.message(RegistrationStates.waiting_for_nickname)
 async def process_nickname(message: Message, state: FSMContext):
     """Обработка ввода никнейма"""
+    
     nickname = message.text.strip()
     
     # Валидация никнейма
-    is_valid, error_msg = validate_nickname(nickname)
-    
-    if not is_valid:
-        await message.answer(error_msg)
+    if len(nickname) < 3 or len(nickname) > 20:
+        await message.answer(
+            "❌ Никнейм должен быть от 3 до 20 символов.\n"
+            "Пожалуйста, введите еще раз:",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
     
-    # Проверяем, занят ли никнейм
-    if db.is_nickname_taken(nickname):
-        await message.answer("❌ Этот никнейм уже занят. Выберите другой:")
+    # Проверка на запрещенные слова
+    forbidden_words = ['админ', 'admin', 'модератор', 'root', 'бот', 'система']
+    if any(word in nickname.lower() for word in forbidden_words):
+        await message.answer(
+            "❌ Никнейм содержит запрещенные слова.\n"
+            "Пожалуйста, введите другой никнейм:",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
     
-    # Сохраняем никнейм и переходим к выбору региона
+    # Сохраняем никнейм в состоянии
     await state.update_data(nickname=nickname)
+    
+    # Переходим к выбору региона
     await state.set_state(RegistrationStates.waiting_for_region)
     
-    text = (
+    await message.answer(
         f"✅ Отличный выбор, <b>{nickname}</b>!\n\n"
-        f"🌍 Теперь выберите ваш регион из списка ниже:\n\n"
-        f"<i>Используйте кнопки или напишите название города</i>"
+        f"🌍 Теперь введите ваш город:\n\n"
+        f"<i>Просто напишите название города (например: Москва, Санкт-Петербург, Орел)</i>",
+        reply_markup=ReplyKeyboardRemove()  # Убираем все клавиатуры
     )
-    
-    await message.answer(text, reply_markup=AuthKeyboards.get_regions_keyboard())
 
-@router.message(RegistrationStates.waiting_for_region, F.text.in_(REGIONS))
+# Обработка выбора региона
 @router.message(RegistrationStates.waiting_for_region)
 async def process_region(message: Message, state: FSMContext):
-    """Обработка выбора региона"""
-    region = message.text.strip()
+    """Обработка ввода региона"""
     
-    # Проверяем, есть ли регион в списке
-    if region not in REGIONS:
-        # Проверяем похожие регионы
-        suggestions = [r for r in REGIONS if region.lower() in r.lower()]
-        
-        if suggestions:
-            text = f"❌ Регион '{region}' не найден.\n\nВозможно вы имели в виду:\n" + "\n".join(suggestions[:5])
-        else:
-            text = f"❌ Регион '{region}' не найден. Пожалуйста, выберите регион из списка кнопок."
-        
-        await message.answer(text)
+    city_input = message.text.strip()
+    data = await state.get_data()
+    
+    # Ищем город в базе
+    city = find_city_in_regions(city_input)
+    
+    if not city:
+        # Город не найден
+        await message.answer(
+            f"❌ Город <b>{city_input}</b> не найден в нашей базе.\n\n"
+            f"Пожалуйста, введите другой город.\n"
+            f"<i>Убедитесь, что название написано правильно.</i>",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
     
-    # Получаем сохраненные данные
-    data = await state.get_data()
-    nickname = data.get('nickname')
+    # Регион найден - продолжаем регистрацию
+    nickname = data['nickname']
     referrer_id = data.get('referrer_id')
     
-    # Генерируем уникальный ID
-    registration_number = generate_registration_number()
-    
     # Регистрируем пользователя
-    try:
-        telegram_id = message.from_user.id
-        username = message.from_user.username or ""
-        
-        # Создаем пользователя
-        db.create_user(
-            telegram_id=telegram_id,
-            username=username,
-            nickname=nickname,
-            region=region,
-            registration_number=registration_number,
-            referrer_id=referrer_id
-        )
-        
-        # Если был реферер, добавляем связь
-        if referrer_id:
-            try:
-                db.add_referral_connection(referrer_id, telegram_id)
-            except Exception as e:
-                logger.error(f"Ошибка добавления реферальной связи: {e}")
-        
-        # Завершаем регистрацию
-        text = (
-            f"🎉 <b>РЕГИСТРАЦИЯ УСПЕШНО ЗАВЕРШЕНА!</b>\n\n"
-            f"👤 <b>Никнейм:</b> {nickname}\n"
-            f"🌍 <b>Регион:</b> {region}\n"
-            f"🏷️ <b>Ваш ID:</b> <code>{registration_number}</code>\n\n"
-            f"💰 <b>Стартовый бонус:</b> 50 GFT\n\n"
-            f"<i>Теперь у вас есть доступ ко всем функциям бота!</i>"
-        )
-        
-        # Показываем главное меню
-        await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
-        
-        # Показываем кнопки под чатом
-        await message.answer(
-            "⬇️ <b>Основные кнопки всегда доступны ниже:</b>",
-            reply_markup=MainKeyboards.get_bottom_keyboard()
-        )
-        
-        await state.clear()
-        
-    except Exception as e:
-        logger.error(f"Ошибка регистрации пользователя: {e}")
-        await message.answer(
-            "❌ Произошла ошибка при регистрации. Пожалуйста, попробуйте снова с помощью /start"
-        )
-        await state.clear()
-
-@router.message(Command("menu"))
-async def cmd_menu(message: Message):
-    """Команда /menu для отображения главного меню"""
-    telegram_id = message.from_user.id
+    user_data = {
+        'telegram_id': message.from_user.id,
+        'username': message.from_user.username,
+        'nickname': nickname,
+        'region': city,
+        'referrer_id': referrer_id
+    }
     
-    user = db.get_user(telegram_id)
-    if not user:
-        await message.answer("❌ Сначала зарегистрируйтесь с помощью /start")
+    success = db.create_user(user_data)
+    
+    if not success:
+        await message.answer(
+            "❌ Произошла ошибка при регистрации.\n"
+            "Пожалуйста, попробуйте еще раз /start",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.clear()
         return
     
-    text = (
-        "🏠 <b>ГЛАВНОЕ МЕНЮ GROMFIT</b>\n\n"
-        "Выберите раздел для навигации:\n\n"
-        "• 🏋️‍♂️ <b>ПРОФИЛЬ</b> - ваши данные и статистика\n"
-        "• ⚔️ <b>ДУЭЛИ</b> - спортивные соревнования\n"
-        "• 📊 <b>ТРЕНИРОВКИ</b> - запись и статистика тренировок\n"
-        "• 🎯 <b>ДОСТИЖЕНИЯ</b> - ваши награды и ачивки\n"
-        "• 💰 <b>МАГАЗИН</b> - покупка товаров за токены\n"
-        "• 👥 <b>РЕФЕРАЛЫ</b> - приглашение друзей и бонусы\n"
-        "• 🎁 <b>ЕЖЕДНЕВНЫЙ БОНУС</b> - ежедневная награда\n\n"
-        "<i>Основные кнопки всегда доступны ниже ↓</i>"
+    # Если есть реферер - начисляем бонусы
+    if referrer_id:
+        db.add_referral(referrer_id, message.from_user.id)
+    
+    # Получаем пользователя для отображения данных
+    user = db.get_user_by_telegram_id(message.from_user.id)
+    
+    await message.answer(
+        f"🎉 <b>Поздравляем с регистрацией, {nickname}!</b>\n\n"
+        f"📋 Ваши данные:\n"
+        f"• ID: <code>{user['registration_number']}</code>\n"
+        f"• Никнейм: <b>{nickname}</b>\n"
+        f"• Регион: <b>{city}</b>\n"
+        f"• Баланс: <b>50.00</b> токенов\n\n"
+        f"🎁 Вы получили стартовый бонус: 50 токенов!",
+        reply_markup=MainKeyboards.get_main_menu()
     )
     
-    await message.answer(text, reply_markup=MainKeyboards.get_main_menu())
+    # Показываем нижнее меню
+    await message.answer(
+        "📱 Теперь вы можете пользоваться всеми функциями бота!",
+        reply_markup=MainKeyboards.get_bottom_keyboard()
+    )
+    
+    # Очищаем состояние
+    await state.clear()
+
+# Отмена регистрации
+@router.message(Command("cancel"))
+@router.message(F.text.lower() == "отмена")
+async def cancel_registration(message: Message, state: FSMContext):
+    """Отмена регистрации"""
+    await state.clear()
+    await message.answer(
+        "❌ Регистрация отменена.\n"
+        "Для начала регистрации используйте /start",
+        reply_markup=ReplyKeyboardRemove()
+    )
