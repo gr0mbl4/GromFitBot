@@ -1,127 +1,245 @@
 """
-Главный файл бота GromFit
-Точка входа в приложение
+Точка входа в приложение GromFitBot
+Полная версия с инициализацией всех компонентов
 """
 
+import sys
+import os
 import asyncio
 import logging
-import logging.config
-import os
-import sys
+from pathlib import Path
 
-# Добавляем путь к родительской директории для импорта src
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.insert(0, parent_dir)
+# Добавляем корневую директорию в путь для импортов
+current_dir = Path(__file__).parent
+project_root = current_dir.parent
+sys.path.insert(0, str(project_root))
 
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+# Настройка логирования до импорта других модулей
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 
-from src.core.config import BOT_TOKEN, LOGGING_CONFIG
-
-# Настройка логирования
-logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
-async def main():
-    """Основная функция запуска бота"""
+def setup_environment():
+    """Настройка окружения и проверка зависимостей"""
+    logger.info("=" * 60)
+    logger.info("Настройка окружения GromFitBot")
+    logger.info("=" * 60)
     
-    logger.info("🚀 Запуск GromFitBot...")
+    # Проверка Python версии
+    python_version = sys.version_info
+    if python_version.major < 3 or (python_version.major == 3 and python_version.minor < 9):
+        logger.error(f"Требуется Python 3.9 или выше. У вас: {python_version.major}.{python_version.minor}")
+        return False
     
-    try:
-        # Проверяем токен бота (смягченная проверка для тестирования)
-        if not BOT_TOKEN:
-            logger.error("❌ Токен бота не установлен.")
-            print("❌ ОШИБКА: Токен бота не установлен!")
-            print("Проверьте файл .env и убедитесь, что BOT_TOKEN установлен.")
-            return
-        
-        logger.info(f"🤖 Бот инициализирован с токеном: {BOT_TOKEN[:10]}...")
-        
-        # Создаем экземпляр бота
-        bot = Bot(
-            token=BOT_TOKEN,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-        )
-        
-        # Создаем диспетчер
-        dp = Dispatcher()
-        
-        # Импортируем и инициализируем бота
-        from src.core.bot import GromFitBot
-        gromfit_bot = GromFitBot(bot, dp)
-        
-        # Настраиваем роутеры
-        gromfit_bot.setup()
-        
-        logger.info("✅ Бот инициализирован. Начинаем polling...")
-        print("=" * 50)
-        print("🤖 GROMFIT BOT ЗАПУЩЕН!")
-        print("=" * 50)
-        print("Статус: 🟢 АКТИВЕН")
-        print(f"Токен: {BOT_TOKEN[:10]}...")
-        print("Ожидание сообщений...")
-        print("=" * 50)
-        
-        # Запускаем бота
-        await dp.start_polling(bot)
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка при запуске бота: {e}", exc_info=True)
-        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        print("Проверьте логи в папке logs/")
-        raise
-    finally:
-        logger.info("🛑 Бот остановлен")
-        print("\n🛑 Бот остановлен")
-
-def check_environment():
-    """Проверка окружения перед запуском"""
-    print("🔍 Проверка окружения...")
+    logger.info(f"✅ Python версия: {python_version.major}.{python_version.minor}.{python_version.micro}")
     
-    # Проверяем наличие .env файла
-    env_file = os.path.join(parent_dir, '.env')
-    if not os.path.exists(env_file):
-        print("⚠️ Файл .env не найден. Используются значения по умолчанию.")
-        # Создаем .env файл с тестовым токеном
-        try:
-            with open(env_file, 'w', encoding='utf-8') as f:
-                f.write("BOT_TOKEN=8170901723:AAFCJDYlQqvcKxiNVvQrM3n1R9snzWljeC8\n")
-                f.write("REDIS_HOST=localhost\n")
-                f.write("REDIS_PORT=6379\n")
-                f.write("WEB_HOST=0.0.0.0\n")
-                f.write("WEB_PORT=8080\n")
-            print("✅ Создан файл .env с тестовым токеном")
-        except Exception as e:
-            print(f"⚠️ Не удалось создать .env файл: {e}")
+    # Проверка необходимых директорий
+    required_dirs = ['data', 'logs', 'temp']
+    for dir_name in required_dirs:
+        dir_path = Path(dir_name)
+        if not dir_path.exists():
+            try:
+                dir_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"✅ Создана директория: {dir_path}")
+            except Exception as e:
+                logger.error(f"❌ Не удалось создать директорию {dir_path}: {e}")
+                return False
+        else:
+            logger.info(f"✅ Директория существует: {dir_path}")
     
-    # Проверяем наличие базы данных
-    db_dir = os.path.join(parent_dir, 'data')
-    if not os.path.exists(db_dir):
-        print("📁 Создаю директорию data...")
-        os.makedirs(db_dir, exist_ok=True)
+    # Проверка необходимых файлов
+    required_files = ['.env']
+    for file_name in required_files:
+        file_path = Path(file_name)
+        if not file_path.exists():
+            logger.warning(f"⚠️ Файл не найден: {file_path}")
+            
+            # Создаем пример .env файла если он отсутствует
+            if file_name == '.env':
+                try:
+                    create_example_env()
+                    logger.info(f"✅ Создан пример файла: {file_path}.example")
+                except Exception as e:
+                    logger.error(f"❌ Не удалось создать пример .env файла: {e}")
+        else:
+            logger.info(f"✅ Файл существует: {file_path}")
     
-    # Проверяем наличие логов
-    logs_dir = os.path.join(parent_dir, 'logs')
-    if not os.path.exists(logs_dir):
-        print("📁 Создаю директорию logs...")
-        os.makedirs(logs_dir, exist_ok=True)
+    # Проверка виртуального окружения
+    if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+        logger.info("✅ Виртуальное окружение активировано")
+    else:
+        logger.warning("⚠️ Виртуальное окружение не активировано")
     
-    print("✅ Окружение проверено")
+    logger.info("✅ Настройка окружения завершена")
     return True
 
-if __name__ == "__main__":
-    # Проверяем окружение перед запуском
-    if not check_environment():
-        print("❌ Запуск отменен из-за проблем с окружением")
-        sys.exit(1)
+def create_example_env():
+    """Создание примера .env файла"""
+    env_example_content = """# Токен бота Telegram (получить у @BotFather)
+BOT_TOKEN=your_bot_token_here
+
+# Настройки базы данных
+DB_PATH=data/users.db
+
+# Настройки Redis (опционально)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# Веб-настройки (для будущего веб-интерфейса)
+WEB_HOST=0.0.0.0
+WEB_PORT=8080
+WEB_SECRET=your_secret_key_here
+
+# Настройки S3 для бэкапов (опционально)
+S3_ENDPOINT=
+S3_ACCESS_KEY=
+S3_SECRET_KEY=
+S3_BUCKET=
+S3_REGION=
+
+# Настройки логирования
+LOG_LEVEL=INFO
+LOG_FILE=logs/bot.log
+ERROR_LOG_FILE=logs/errors.log
+
+# ID администраторов (через запятую)
+ADMIN_IDS=123456789,987654321
+
+# Режимы работы
+DEBUG_MODE=False
+MAINTENANCE_MODE=False
+
+# Настройки бота
+BOT_USERNAME=
+BOT_NAME=GromFitBot
+BOT_DESCRIPTION=Спортивные дуэли на токенах
+
+# Экономические настройки
+START_TOKENS=50.0
+REFERRAL_BONUS=10.0
+DAILY_BONUS_BASE=5.0
+DAILY_STREAK_MULTIPLIER=1.2
+
+# Настройки регистрации
+MIN_NICKNAME_LENGTH=3
+MAX_NICKNAME_LENGTH=20
+ALLOWED_REGIONS=Москва,Санкт-Петербург,Новосибирск,Екатеринбург,Казань
+
+# Настройки магазина
+SHOP_ENABLED=True
+MAX_PURCHASE_PER_DAY=10
+"""
     
-    # Запускаем бота
+    with open('.env.example', 'w', encoding='utf-8') as f:
+        f.write(env_example_content)
+
+def init_message_manager_in_modules(bot):
+    """Инициализация менеджера сообщений во всех модулях"""
+    logger.info("Инициализация менеджера сообщений в модулях...")
+    
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\n⚠️ Бот остановлен пользователем (Ctrl+C)")
+        # Импортируем функции инициализации из каждого модуля
+        from modules.referrals.handlers import init_message_manager as init_ref
+        from modules.profile.handlers import init_message_manager as init_prof
+        from modules.shop.handlers import init_message_manager as init_shop
+        from modules.bonus.handlers import init_message_manager as init_bonus
+        
+        # Инициализируем менеджер сообщений в каждом модуле
+        init_ref(bot)
+        init_prof(bot)
+        init_shop(bot)
+        init_bonus(bot)
+        
+        logger.info("✅ Менеджер сообщений инициализирован во всех модулях")
+        return True
+    except ImportError as e:
+        logger.error(f"❌ Ошибка импорта при инициализации модулей: {e}")
+        return False
     except Exception as e:
-        print(f"\n\n❌ Непредвиденная ошибка: {e}")
-        sys.exit(1)
+        logger.error(f"❌ Ошибка инициализации менеджера сообщений: {e}")
+        return False
+
+def check_database():
+    """Проверка базы данных"""
+    try:
+        from core.database import Database
+        db = Database()
+        
+        if db.test_connection():
+            user_count = db.get_user_count()
+            logger.info(f"✅ База данных подключена. Пользователей: {user_count}")
+            return True
+        else:
+            logger.error("❌ Не удалось подключиться к базе данных")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки базы данных: {e}")
+        return False
+
+async def main_async():
+    """Асинхронная точка входа"""
+    logger.info("=" * 60)
+    logger.info("Запуск GromFitBot v4.1")
+    logger.info("=" * 60)
+    
+    # Настройка окружения
+    if not setup_environment():
+        logger.error("❌ Не удалось настроить окружение. Завершение работы.")
+        return
+    
+    # Проверка базы данных
+    if not check_database():
+        logger.warning("⚠️ Проблемы с базой данных. Бот может работать некорректно.")
+    
+    # Импортируем основной класс бота
+    from core.bot import GromFitBot
+    
+    try:
+        # Создаем экземпляр бота
+        bot_instance = GromFitBot()
+        logger.info("✅ Экземпляр бота создан")
+        
+        # Инициализируем менеджер сообщений в модулях
+        if not init_message_manager_in_modules(bot_instance.bot):
+            logger.warning("⚠️ Не удалось инициализировать менеджер сообщений в модулях")
+        
+        # Запускаем бота
+        logger.info("🚀 Запуск бота...")
+        await bot_instance.start()
+        
+    except ImportError as e:
+        logger.error(f"❌ Ошибка импорта: {e}")
+        logger.info("Проверьте, что все зависимости установлены:")
+        logger.info("pip install -r requirements.txt")
+        return
+    except KeyboardInterrupt:
+        logger.info("⏹️ Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка при запуске бота: {e}")
+        logger.exception("Детали ошибки:")
+        raise
+    finally:
+        logger.info("✅ Работа бота завершена")
+
+def main():
+    """Основная точка входа"""
+    try:
+        # Запускаем асинхронную функцию
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        print("\n👋 Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"Фатальная ошибка: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()
